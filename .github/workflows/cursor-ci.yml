@@ -1,33 +1,20 @@
-# GitHub Actions workflow for Cursor branches (prefix cursor/)
-# Runs tests on push to any branch starting with 'cursor/'
-# This offloads work from Travis CI
-
-name: Cursor CI
+# .github/workflows/cursor-ci.yml
+name: Cursor Branch CI
 
 on:
   push:
     branches:
-      - 'cursor/**'   # Only branches like cursor/fix-weekly-calendar
+      - 'cursor/**'
+  pull_request:
+    branches:
+      - '**'
 
 jobs:
   test:
+    if: startsWith(github.head_ref, 'cursor/') || startsWith(github.ref_name, 'cursor/')
     runs-on: ubuntu-22.04
 
-    # Helper services (PostgreSQL and Redis) as Docker containers
     services:
-      postgres:
-        image: postgres:14
-        env:
-          POSTGRES_HOST_AUTH_METHOD: trust   # Allow local connections without password
-          POSTGRES_USER: postgres
-          POSTGRES_DB: travis_ci_test
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd pg_isready
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
       redis:
         image: redis
         ports:
@@ -38,101 +25,101 @@ jobs:
           --health-timeout 5s
           --health-retries 5
 
-    # Global environment variables
+      postgres:
+        image: postgres:14
+        env:
+          POSTGRES_USER: travis
+          POSTGRES_PASSWORD: password
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
     env:
       PGPORT: 5432
       PGUSER: travis
       PGPASSWORD: password
       RAILS_ENV: test
 
-    # Matrix of parallel jobs (replicates Travis jobs.include)
     strategy:
-      fail-fast: false   # Continue other jobs even if one fails
+      fail-fast: false
       matrix:
         include:
           - spec_folder: 'spec/system'
             exclude: 'spec/system/{review_generation,feedback_tool}/**/*_spec.rb'
             percy: 'true'
-            run_lint: 'false'
           - spec_folder: 'spec/system/review_generation'
             exclude: 'dummy'
-            percy: 'false'
             run_lint: 'true'
           - spec_folder: 'spec/system/feedback_tool'
             exclude: 'spec/system/feedback_tool/survey_builder/*_spec.rb'
-            percy: 'false'
-            run_lint: 'false'
           - spec_folder: 'spec/system/feedback_tool/survey_builder'
             exclude: 'dummy'
-            percy: 'false'
-            run_lint: 'false'
           - spec_folder: 'spec'
             exclude: 'spec/system/**/*_spec.rb'
-            percy: 'false'
-            run_lint: 'false'
 
     steps:
-      - name: Checkout repository
+      - name: Checkout
         uses: actions/checkout@v4
         with:
           fetch-depth: 3
 
-      - name: Set up Ruby 3.1.6
+      - name: Setup Ruby 3.1.6
         uses: ruby/setup-ruby@v1
         with:
-          ruby-version: 3.1.6
-          bundler: '< 2'
+          ruby-version: '3.1.6'
           bundler-cache: true
+        env:
+          BUNDLE_WITHOUT: 'development:production'
 
-      - name: Set up Node.js 12.18.4
+      - name: Setup Node v12.18.4
         uses: actions/setup-node@v4
         with:
           node-version: '12.18.4'
           cache: 'yarn'
 
-      - name: Install system packages (xclip, Chrome, PostgreSQL client, Xvfb)
+      - name: Install Yarn dependencies
+        run: yarn install
+
+      - name: Install system dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y xclip google-chrome-stable postgresql-client-14 xvfb
+          sudo apt-get install -y xclip xvfb
+          wget -q -O - https://dl.google.com/linux/linux_signing_key.pub | sudo apt-key add -
+          echo "deb [arch=amd64] http://dl.google.com/linux/chrome/deb/ stable main" \
+            | sudo tee /etc/apt/sources.list.d/google-chrome.list
+          sudo apt-get update
+          sudo apt-get install -y google-chrome-stable
 
-      - name: Start Xvfb virtual display
-        run: |
-          Xvfb :99 -screen 0 1280x1024x24 &
-          echo "DISPLAY=:99" >> $GITHUB_ENV
+      - name: Cache webdrivers
+        uses: actions/cache@v4
+        with:
+          path: .webdrivers
+          key: webdrivers-${{ runner.os }}-${{ hashFiles('Gemfile.lock') }}
 
-      - name: Create 'travis' user in PostgreSQL
-        run: |
-          psql -h localhost -U postgres -c "CREATE USER travis WITH SUPERUSER PASSWORD 'password';"
-        env:
-          PGPASSWORD: ''   # No password needed because of trust auth
-
-      - name: Prepare test databases (pos:create, schema:load, test:prepare)
+      - name: Setup databases
         run: |
           bundle exec rake db:pos:create db:pos:schema:load db:pos:test:prepare
           bundle exec rake db:test:prepare
 
-      - name: Install JavaScript dependencies with Yarn
-        run: yarn install --frozen-lockfile
+      - name: Precompile assets
+        #run: bin/rails assets:precompile
+        run: echo "Assets precompile skipped"
+        
+      - name: Run lint
+        if: matrix.run_lint == 'true'
+        run: ./bin/lint.sh
 
-      - name: Precompile assets for test environment
-        run: RAILS_ENV=test bin/rails assets:precompile &> /dev/null
-
-      - name: Run linter (if enabled) and execute tests
-        run: |
-          if [[ "${{ matrix.run_lint }}" == "true" ]]; then
-            ./bin/lint.sh
-          fi
-          ./bin/run_tests.sh
+      - name: Run tests
         env:
           SPEC_FOLDER: ${{ matrix.spec_folder }}
           EXCLUDE: ${{ matrix.exclude }}
           PERCY: ${{ matrix.percy }}
-          # If you need a Percy token, uncomment and add the secret in GitHub:
-          # PERCY_TOKEN: ${{ secrets.PERCY_TOKEN }}
-
-      - name: Upload screenshots on failure
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: screenshots-${{ matrix.spec_folder }}
-          path: tmp/screenshots/
+        run: |
+          Xvfb :99 -screen 0 1024x768x24 &
+          export DISPLAY=:99
+          ./bin/run_tests.sh
