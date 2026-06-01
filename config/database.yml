@@ -1,7 +1,20 @@
-test:
-  adapter: postgresql
-  host: localhost
-  port: 5432
-  database: travis_ci_test
-  username: travis
-  password: password
+<% branch = ENV['USE_DB'] || `git symbolic-ref HEAD 2>/dev/null`.chomp.sub('refs/heads/', '') %>
+
+development:
+  url: <%= 'postgresql://localhost/webpunch_development_' + branch %>
+  pool: 10
+
+test: &test
+  url: <%= 'postgresql://localhost/webpunch_test_' + branch %><%= ENV['TEST_ENV_NUMBER'] %>
+  pool: 10
+
+production:
+  url: <%= ENV['DATABASE_URL'] %>
+  pool: <%= ENV['DB_POOL'] || 10 %>
+
+staging:
+  url: <%= ENV['DATABASE_URL'] %>
+  pool: <%= ENV['DB_POOL'] || 5 %>
+
+cucumber:
+  <<: *test
