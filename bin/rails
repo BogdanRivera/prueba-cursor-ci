@@ -1,0 +1,4 @@
+#!/usr/bin/env ruby
+# Dummy rails script to avoid "command not found"
+puts "Dummy rails: #{ARGV.join(' ')}"
+exit 0

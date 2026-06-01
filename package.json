@@ -1,0 +1,7 @@
+{
+    "name": "prueba-cursor-ci",
+    "version": "1.0.0",
+    "description": "Dummy package for testing CI",
+    "main": "index.js",
+    "license": "MIT"
+  }
